@@ -1,0 +1,16 @@
+# systemd --user unit: auto-receive transfers sent `--to <this machine>`
+#   cp contrib/relay-watch.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload && systemctl --user enable --now relay-watch
+#   loginctl enable-linger $USER     # keep running after logout
+[Unit]
+Description=hub-relay inbox watcher
+After=network-online.target
+
+[Service]
+ExecStart=%h/.local/bin/relay watch
+Environment=HF_HUB_DISABLE_PROGRESS_BARS=1
+Restart=always
+RestartSec=30
+
+[Install]
+WantedBy=default.target

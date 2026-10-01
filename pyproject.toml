@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "hub-relay"
+version = "0.1.0"
+description = "Use HuggingFace / ModelScope private repos as a file tunnel and personal drive"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+    "huggingface_hub>=0.32",   # >=0.32 pulls in hf_xet: the only upload path that works through hf-mirror untouched
+    "tomli>=1.1; python_version<'3.11'",
+]
+
+[project.optional-dependencies]
+ms = ["modelscope>=1.30"]
+
+[project.scripts]
+relay = "hub_relay.cli:main"
+
+[tool.setuptools]
+packages = ["hub_relay", "hub_relay.backends"]
+
+[tool.setuptools.package-data]
+hub_relay = ["SKILL.md"]
