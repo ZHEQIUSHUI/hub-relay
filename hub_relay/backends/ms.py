@@ -3,14 +3,36 @@
 ModelScope has no history squash, so `gc` only deletes; quota is reclaimed by
 recreating the repo if it ever matters.
 """
+import contextlib
+import functools
 import hashlib
+import io
 import os
+import sys
 import tempfile
+import threading
 from pathlib import Path
 
 from .base import Backend, Entry
 
 REV = "master"
+# redirect_stdout/stderr swap process-wide globals, so concurrent calls (ls reads manifests
+# from a thread pool) would restore each other's streams in the wrong order — serialize
+_SDK_LOCK = threading.RLock()
+
+
+def _quiet(fn):
+    """The SDK prints to stdout (which must stay clean for `relay push` / --json) and draws
+    tqdm bars; send prints to stderr and drop the bars when not on a terminal."""
+    @functools.wraps(fn)
+    def wrapper(*a, **kw):
+        bars_off = os.environ.get("HF_HUB_DISABLE_PROGRESS_BARS") or not sys.stderr.isatty()
+        with _SDK_LOCK, contextlib.ExitStack() as st:
+            st.enter_context(contextlib.redirect_stdout(io.StringIO() if bars_off else sys.stderr))
+            if bars_off:
+                st.enter_context(contextlib.redirect_stderr(io.StringIO()))
+            return fn(*a, **kw)
+    return wrapper
 
 
 class MSBackend(Backend):
@@ -25,8 +47,11 @@ class MSBackend(Backend):
         if not self.token:
             raise RuntimeError("no ModelScope token: set [ms] token_file in config or $MODELSCOPE_API_TOKEN")
         self.endpoint = endpoint
+        import logging
+        for lg in ("modelscope", "modelscope_hub"):
+            logging.getLogger(lg).setLevel(logging.WARNING)
         self.api = HubApi()
-        self.api.login(self.token)
+        self.cookies = self.api.login(self.token)[1]
 
     def _kw(self):
         kw = {"token": self.token}
@@ -35,15 +60,20 @@ class MSBackend(Backend):
         return kw
 
     def whoami(self):
-        # login() succeeded; ModelScope's user name lives in the session cookies
-        for c in self.api.get_cookies() or []:
-            if getattr(c, "name", "") in ("user_name", "username"):
-                return c.value
-        return "?"
+        import requests
+        r = requests.get(f"{self.endpoint or 'https://modelscope.cn'}/api/v1/users/login/info",
+                         cookies=self.cookies, timeout=20)
+        r.raise_for_status()
+        name = (r.json().get("Data") or {}).get("Name")
+        if not name:
+            raise RuntimeError("could not determine ModelScope user name")
+        return name
 
+    @_quiet
     def ensure_repo(self, repo):
         self.api.create_repo(repo, repo_type="dataset", visibility="private", exist_ok=True, **self._kw())
 
+    @_quiet
     def _files(self, repo, root, recursive):
         out, page = [], 1
         while True:
@@ -87,15 +117,18 @@ class MSBackend(Backend):
                 raise
             return Path(p).read_text()
 
+    @_quiet
     def upload(self, repo, items, message):
         for src, dst in items:
             self.api.upload_file(repo_id=repo, path_or_fileobj=src, path_in_repo=dst,
                                  repo_type="dataset", commit_message=message, token=self.token)
 
+    @_quiet
     def download(self, repo, path, dest_dir):
         from modelscope.hub.file_download import dataset_file_download
         return dataset_file_download(repo, path, local_dir=dest_dir, revision=REV, **self._kw())
 
+    @_quiet
     def delete(self, repo, paths, message):
         files = []
         for p in paths:
@@ -108,5 +141,9 @@ class MSBackend(Backend):
                                   commit_message=message, **self._kw())
 
     def curl_hint(self, repo, path):
-        return (f'curl -L --fail -C - -H "Authorization: Bearer $MODELSCOPE_API_TOKEN" '
-                f'"https://modelscope.cn/api/v1/datasets/{repo}/repo?Revision={REV}&FilePath={path}"')
+        # file downloads only accept the web session cookie, not a bearer token: log in first
+        ep = self.endpoint or "https://modelscope.cn"
+        login = (f"SID=$(curl -s -c - -X POST {ep}/api/v1/login -H 'Content-Type: application/json' "
+                 "-d \"{\\\"AccessToken\\\":\\\"$MODELSCOPE_API_TOKEN\\\"}\" | awk '$6==\"m_session_id\"{print $7}')")
+        return (f'{login}; curl -L --fail -C - -b "m_session_id=$SID" '
+                f'"{ep}/api/v1/datasets/{repo}/repo?Revision={REV}&FilePath={path}"')

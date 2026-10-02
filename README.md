@@ -93,7 +93,12 @@ systemctl --user daemon-reload && systemctl --user enable --now relay-watch
 loginctl enable-linger $USER      # 注销后继续运行
 ```
 
+## 关于 ModelScope
+
+- 仓库为私有数据集（branch `master`），境内外均可直连 modelscope.cn
+- 不支持压平历史，`gc` 只做删除
+- 文件下载接口只接受登录会话 cookie，不接受 Bearer token；`push --curl` / `store url` 生成的命令会先用 AccessToken 登录换取会话再下载
+
 ## 已知限制
 
-- ModelScope 后端尚未经过完整测试；ModelScope 不支持压平历史，`gc` 只做删除
 - 请遵守 HuggingFace / ModelScope 的服务条款，中转仓库适合临时传输，不建议长期存放大量数据
